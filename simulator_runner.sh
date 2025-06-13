@@ -1,10 +1,11 @@
 #!/bin/bash
 
-# Default configuration
+# Default config
 LOG_DIR="$HOME/simulator-logs"
 SCRIPT_NAME="./lunchtime-simulator"
 TIMEOUT_HOURS=5
 CORES_PER_RUN=8
+CHECK_INTERVAL=300  # seconds to wait before retrying download
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -29,13 +30,56 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Derived
 RUNTIME_LIMIT="${TIMEOUT_HOURS}h"
 
 # Timestamp helper
 timestamp() {
   date +"[%Y-%m-%d %H:%M:%S]"
 }
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+
+# Determine architecture and OS
+ARCH=$(uname -m)
+OS=$(uname | tr '[:upper:]' '[:lower:]')
+
+case "$OS-$ARCH" in
+  linux-x86_64)
+    SIMULATOR_URL="https://releases.quilibrium.com/lunchtime-simulator-linux-amd64"
+    ;;
+  linux-aarch64 | linux-arm64)
+    SIMULATOR_URL="https://releases.quilibrium.com/lunchtime-simulator-linux-arm64"
+    ;;
+  darwin-arm64)
+    SIMULATOR_URL="https://releases.quilibrium.com/lunchtime-simulator-darwin-arm64"
+    ;;
+  *)
+    echo "$(timestamp) ❌ Unsupported OS/Arch: $OS-$ARCH"
+    exit 1
+    ;;
+esac
+
+echo "$(timestamp) 🧬 Auto-detected system: $OS-$ARCH"
+echo "$(timestamp) 🌐 Will download simulator from: $SIMULATOR_URL"
+
+# Auto-download binary if missing
+if [ ! -f "$SCRIPT_NAME" ]; then
+  echo "$(timestamp) ⚠️ Simulator binary not found at '$SCRIPT_NAME'."
+  echo "$(timestamp) ⬇️ Attempting to download from: $SIMULATOR_URL"
+
+  while true; do
+    HTTP_STATUS=$(curl -s -L -o "$SCRIPT_NAME" -w "%{http_code}" "$SIMULATOR_URL")
+    if [ "$HTTP_STATUS" -eq 200 ]; then
+      chmod +x "$SCRIPT_NAME"
+      echo "$(timestamp) ✅ Downloaded and made executable: $SCRIPT_NAME"
+      break
+    else
+      echo "$(timestamp) ❌ Download failed (HTTP $HTTP_STATUS). Retrying in $((CHECK_INTERVAL/60)) minutes..."
+      sleep $CHECK_INTERVAL
+    fi
+  done
+fi
 
 # CPU setup
 TOTAL_CORES=$(nproc)
@@ -47,13 +91,11 @@ if [ "$MAX_PARALLEL_RUNS" -lt 1 ]; then
 fi
 
 echo "$(timestamp) 🧠 Detected $TOTAL_CORES cores. Running $MAX_PARALLEL_RUNS simulator slots."
-echo "$(timestamp) 📁 Logs will be stored in: $LOG_DIR"
+echo "$(timestamp) 📁 Logs: $LOG_DIR"
 echo "$(timestamp) 🔧 Simulator binary: $SCRIPT_NAME"
 echo "$(timestamp) ⏳ Timeout per run: $RUNTIME_LIMIT"
 
-mkdir -p "$LOG_DIR"
-
-# Slot logic
+# Run one slot (loop forever)
 run_slot() {
   local slot_id=$1
   while true; do
@@ -80,7 +122,7 @@ run_slot() {
   done
 }
 
-# Launch slots
+# Launch N slots
 for ((i=1; i<=MAX_PARALLEL_RUNS; i++)); do
   run_slot "$i" &
 done
